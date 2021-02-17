@@ -1,0 +1,20 @@
+def input_matrix():
+    n = int(input("enter number of rows: "))
+    m = int(input("enter number of columns: "))
+
+    vector = dict()
+    for r in range(n):
+        for c in range(m):
+            t = int(input("(" + str(r) + ',' + str(c) + '): '))
+            if t != 0:
+                if r not in vector:
+                    rdict = dict()
+                else:
+                    rdict = vector[r]
+                rdict[c] = t
+                vector[r] = rdict
+
+    return vector
+
+
+mat = input_matrix()
