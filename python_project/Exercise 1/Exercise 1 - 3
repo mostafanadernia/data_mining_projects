@@ -1,0 +1,13 @@
+inp = input("enter string: ")
+
+str = inp.split(" ")
+
+mp = {}
+
+for i in str:
+    if i in mp:
+        mp[i] = mp[i] + 1
+    else:
+        mp[i] = 1
+
+print(mp)
