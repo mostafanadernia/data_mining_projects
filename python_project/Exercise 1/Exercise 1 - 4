@@ -1,0 +1,13 @@
+inp = input("enter string: ")
+
+str = inp.split(",")
+
+mp = {}
+result = []
+
+for i in str:
+    if i not in mp:
+        result.append(i)
+        mp[i] = True
+result.sort()
+print(result)
