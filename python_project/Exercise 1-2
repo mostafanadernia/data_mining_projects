@@ -1,0 +1,9 @@
+str = input("enter string: ")
+
+mp = ""
+
+for i in range(len(str)):
+    if i % 2 != 1 :
+        mp = mp + str[i]
+
+print(mp)
