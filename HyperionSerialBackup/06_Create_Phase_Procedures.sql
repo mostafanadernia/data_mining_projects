@@ -5,7 +5,8 @@ GO -- پایان batch
 CREATE OR ALTER PROCEDURE dbo.usp_Phase1_InitialBackup -- تعریف رویه فاز 1
     @JobExecutionID UNIQUEIDENTIFIER, -- شناسه job
     @DatabaseName NVARCHAR(128) = NULL, -- دیتابیس هدف اختیاری
-    @DebugMode BIT = 0 -- حالت دیباگ
+    @DebugMode BIT = 0, -- حالت دیباگ
+    @IsRetryMode BIT = 0 -- اجرای فاز در حالت retry
 AS
 BEGIN
     SET NOCOUNT ON; -- کاهش نویز خروجی
@@ -121,7 +122,10 @@ BEGIN
 
     CLOSE DbCursor; -- بستن cursor
     DEALLOCATE DbCursor; -- آزادسازی cursor
-    UPDATE dbo.JobExecutionLog SET CurrentPhase = 2, Phase1EndTime = GETDATE() WHERE JobExecutionID = @JobExecutionID; -- پایان فاز 1
+    IF @IsRetryMode = 0 -- اگر اجرای اولیه بود
+    BEGIN
+        UPDATE dbo.JobExecutionLog SET CurrentPhase = 2, Phase1EndTime = GETDATE() WHERE JobExecutionID = @JobExecutionID; -- پایان فاز 1
+    END;
 END;
 GO
 
@@ -243,7 +247,7 @@ BEGIN
     BEGIN
         BEGIN TRY
             UPDATE dbo.BackupLog SET RetryCount = RetryCount + 1 WHERE LogID = (SELECT MAX(LogID) FROM dbo.BackupLog WHERE JobExecutionID=@JobExecutionID AND DatabaseID=@DatabaseID); -- افزایش retry قبلی
-            EXEC dbo.usp_Phase1_InitialBackup @JobExecutionID = @JobExecutionID, @DatabaseName = @DatabaseName, @DebugMode = 1; -- اجرای مجدد بکاپ برای دیتابیس خراب
+            EXEC dbo.usp_Phase1_InitialBackup @JobExecutionID = @JobExecutionID, @DatabaseName = @DatabaseName, @DebugMode = 1, @IsRetryMode = 1; -- اجرای مجدد بکاپ برای دیتابیس خراب
             UPDATE dbo.BackupLog SET RetryCount = @CurrentRetry + 1 WHERE LogID = (SELECT MAX(LogID) FROM dbo.BackupLog WHERE JobExecutionID=@JobExecutionID AND DatabaseID=@DatabaseID); -- ست retry روی رکورد جدید
         END TRY
         BEGIN CATCH
@@ -335,6 +339,26 @@ BEGIN
 
     SET @Status = CASE WHEN ISNULL(@FailedBackups,0)=0 AND ISNULL(@SuspiciousBackups,0)=0 THEN N'Completed' WHEN ISNULL(@FailedBackups,0)=0 THEN N'CompletedWithWarnings' ELSE N'CompletedWithErrors' END; -- تعیین وضعیت
 
+
+    DECLARE @CleanupDatabaseID INT; -- شناسه دیتابیس برای پاکسازی
+    DECLARE @CleanupMinFilesToKeep INT; -- حداقل فایل نگهداری برای دیتابیس
+    DECLARE CleanupCursor CURSOR LOCAL FAST_FORWARD FOR -- cursor دیتابیس‌های فعال برای retention
+        SELECT DatabaseID, MinFilesToKeep FROM dbo.BackupDatabases WHERE Active = 1; -- دیتابیس‌های هدف پاکسازی
+
+    OPEN CleanupCursor; -- بازکردن cursor پاکسازی
+    FETCH NEXT FROM CleanupCursor INTO @CleanupDatabaseID, @CleanupMinFilesToKeep; -- اولین دیتابیس
+    WHILE @@FETCH_STATUS = 0 -- حلقه پاکسازی
+    BEGIN
+        BEGIN TRY
+            EXEC dbo.usp_CleanupOldFiles @DatabaseID = @CleanupDatabaseID, @MinFilesToKeep = @CleanupMinFilesToKeep; -- اجرای سیاست retention
+        END TRY
+        BEGIN CATCH
+            EXEC dbo.usp_LogError @JobExecutionID, (SELECT DatabaseName FROM dbo.BackupDatabases WHERE DatabaseID=@CleanupDatabaseID), 6, ERROR_MESSAGE(), ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(), N'Retention cleanup failed'; -- ثبت خطای retention
+        END CATCH;
+        FETCH NEXT FROM CleanupCursor INTO @CleanupDatabaseID, @CleanupMinFilesToKeep; -- دیتابیس بعدی
+    END;
+    CLOSE CleanupCursor; -- بستن cursor پاکسازی
+    DEALLOCATE CleanupCursor; -- آزادسازی cursor پاکسازی
     UPDATE dbo.JobExecutionLog -- ثبت نهایی در job
     SET EndTime = GETDATE(), -- زمان پایان
         Status = @Status, -- وضعیت
@@ -348,5 +372,7 @@ BEGIN
         FinalReport = (SELECT @JobExecutionID AS JobExecutionID, @Status AS Status, @TotalDataGB AS TotalDataGB, @AvgBackupTimeSeconds AS AvgBackupTimeSeconds, @AvgSpeedMBps AS AvgSpeedMBps, @SuccessfulBackups AS SuccessfulBackups, @FailedBackups AS FailedBackups, @WarningBackups AS WarningBackups, @SuspiciousBackups AS SuspiciousBackups, @AvgHealthScore AS AvgHealthScore, @TotalRetries AS TotalRetries FOR JSON PATH, WITHOUT_ARRAY_WRAPPER), -- گزارش JSON
         NotificationSent = 0 -- علامت ارسال نوتیفیکیشن
     WHERE JobExecutionID = @JobExecutionID; -- رکورد هدف
+
+    EXEC dbo.usp_SendNotification @JobExecutionID = @JobExecutionID, @NotificationType = CASE WHEN @Status = N'Completed' THEN N'Success' WHEN @Status = N'CompletedWithWarnings' THEN N'Warning' ELSE N'Error' END; -- ارسال اعلان نهایی
 END;
 GO

@@ -32,7 +32,7 @@ BEGIN
     END;
 
     BEGIN TRY
-        IF @CurrentPhase <= 1 EXEC dbo.usp_Phase1_InitialBackup @JobExecutionID, @DatabaseName, @DebugMode; -- اجرای فاز 1
+        IF @CurrentPhase <= 1 EXEC dbo.usp_Phase1_InitialBackup @JobExecutionID, @DatabaseName, @DebugMode, 0; -- اجرای فاز 1
     END TRY
     BEGIN CATCH
         EXEC dbo.usp_LogError @JobExecutionID, @DatabaseName, 1, ERROR_MESSAGE(), ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(), N'Controller catch phase1'; -- ثبت خطای فاز1

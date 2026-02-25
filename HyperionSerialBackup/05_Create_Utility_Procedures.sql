@@ -181,3 +181,61 @@ BEGIN
     END CATCH;
 END;
 GO
+
+-- ===== [رویه پاکسازی فایل‌های قدیمی بر اساس سیاست نگهداری] ===== --
+CREATE OR ALTER PROCEDURE dbo.usp_CleanupOldFiles -- تعریف رویه پاکسازی فایل‌ها
+    @DatabaseID INT, -- شناسه دیتابیس هدف
+    @MinFilesToKeep INT -- حداقل فایل قابل نگهداری
+AS
+BEGIN
+    SET NOCOUNT ON; -- کاهش نویز
+    SET XACT_ABORT ON; -- مدیریت خطا
+
+    ;WITH RankedBackups AS ( -- ایجاد CTE رتبه‌بندی فایل‌ها
+        SELECT -- انتخاب فایل‌های تاییدشده
+            LogID, -- شناسه لاگ
+            BackupFileName, -- نام فایل
+            BackupFilePath, -- مسیر فایل
+            FileSizeBytes, -- اندازه فایل
+            ROW_NUMBER() OVER (ORDER BY EndTime DESC, LogID DESC) AS RN -- رتبه بر اساس جدیدترین
+        FROM dbo.BackupLog -- منبع لاگ بکاپ
+        WHERE DatabaseID = @DatabaseID -- فیلتر دیتابیس
+          AND VerifyResult IN (N'Success', N'Warning') -- فقط فایل‌های سالم/هشدار
+          AND EndTime IS NOT NULL -- فقط فایل کامل‌شده
+    )
+    INSERT INTO dbo.DeleteOldLog (JobExecutionID, DatabaseID, FileName, FilePath, FileSizeBytes, DeletionReason, VerificationStatusAtDeletion) -- ثبت لاگ حذف منطقی
+    SELECT TOP (1000000) -- سقف بالا برای درج دسته‌ای
+        ISNULL((SELECT TOP(1) JobExecutionID FROM dbo.BackupLog WHERE LogID = rb.LogID), NEWID()), -- شناسه job مرتبط
+        @DatabaseID, -- دیتابیس هدف
+        rb.BackupFileName, -- نام فایل
+        rb.BackupFilePath, -- مسیر فایل
+        ISNULL(rb.FileSizeBytes,0), -- اندازه فایل
+        N'Retention Policy', -- علت حذف
+        N'Success' -- وضعیت در زمان حذف
+    FROM RankedBackups rb -- منبع رتبه‌بندی
+    WHERE rb.RN > @MinFilesToKeep; -- انتخاب فایل‌های مازاد
+END;
+GO
+
+-- ===== [رویه ارسال نوتیفیکیشن (ثبت وضعیت در جدول)] ===== --
+CREATE OR ALTER PROCEDURE dbo.usp_SendNotification -- تعریف رویه اعلان
+    @JobExecutionID UNIQUEIDENTIFIER, -- شناسه job
+    @NotificationType NVARCHAR(20) -- نوع اعلان
+AS
+BEGIN
+    SET NOCOUNT ON; -- کاهش نویز
+    SET XACT_ABORT ON; -- مدیریت خطا
+    BEGIN TRY
+        UPDATE dbo.JobExecutionLog -- بروزرسانی زمان ارسال اعلان
+        SET NotificationSent = 1, -- فعال‌سازی پرچم اعلان
+            NotificationTime = GETDATE() -- ثبت زمان اعلان
+        WHERE JobExecutionID = @JobExecutionID; -- رکورد هدف
+
+        INSERT INTO dbo.ErrorLog (JobExecutionID, DatabaseName, Phase, ErrorMessage, ErrorNumber, ErrorSeverity, AdditionalInfo) -- ثبت لاگ اعلان
+        VALUES (@JobExecutionID, NULL, 6, N'Notification dispatched', 0, 10, CONCAT(N'Type=', @NotificationType)); -- مقادیر لاگ
+    END TRY
+    BEGIN CATCH
+        EXEC dbo.usp_LogError @JobExecutionID, NULL, 6, ERROR_MESSAGE(), ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(), N'Notification dispatch failed'; -- ثبت خطای ارسال اعلان
+    END CATCH;
+END;
+GO
