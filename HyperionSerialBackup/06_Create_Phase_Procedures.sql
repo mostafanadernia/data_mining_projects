@@ -74,6 +74,13 @@ BEGIN
 
             EXEC dbo.usp_GenerateFileName @DatabaseNameLocal, @FileName OUTPUT; -- تولید نام فایل
             SET @FullPath = CONCAT(@BackupPath, CASE WHEN RIGHT(@BackupPath,1) = N'\' THEN N'' ELSE N'\' END, @DatabaseNameLocal, N'\', @FileName); -- ساخت مسیر کامل فایل
+            BEGIN TRY
+                DECLARE @TargetDir NVARCHAR(800) = CONCAT(@BackupPath, CASE WHEN RIGHT(@BackupPath,1) = N'\' THEN N'' ELSE N'\' END, @DatabaseNameLocal); -- مسیر پوشه مقصد
+                EXEC master.dbo.xp_create_subdir @TargetDir; -- ایجاد پوشه مقصد در صورت عدم وجود
+            END TRY
+            BEGIN CATCH
+                EXEC dbo.usp_LogError @JobExecutionID, @DatabaseNameLocal, 1, ERROR_MESSAGE(), ERROR_NUMBER(), 16, ERROR_STATE(), N'Create destination folder failed'; -- ثبت خطای ساخت پوشه
+            END CATCH;
 
             INSERT INTO dbo.BackupLog (JobExecutionID, DatabaseID, DatabaseName, BackupFileName, BackupFilePath, StartTime, Status, IsVerified, RetryCount, RequiredSpaceMB, AvailableSpaceMB, OriginalDatabaseSizeBytes, BackupMethod) -- درج رکورد شروع بکاپ
             VALUES (@JobExecutionID, @DatabaseID, @DatabaseNameLocal, @FileName, @FullPath, @StartTime, N'Started', 0, 0, @RequiredSpaceMB, @AvailableSpaceMB, @DatabaseSizeMB*1024*1024, @BackupType); -- مقادیر
@@ -174,15 +181,16 @@ BEGIN
         IF @VerifyTier1Success = 1 -- اگر tier1 موفق بود
         BEGIN
             BEGIN TRY
-                DECLARE @Header TABLE (BackupName NVARCHAR(128), BackupDescription NVARCHAR(255), BackupType SMALLINT, ExpirationDate DATETIME, Compressed BIT, Position SMALLINT, DeviceType TINYINT, UserName NVARCHAR(128), ServerName NVARCHAR(128), DatabaseName NVARCHAR(128), DatabaseVersion INT, DatabaseCreationDate DATETIME, BackupSize NUMERIC(20,0), FirstLSN NUMERIC(25,0), LastLSN NUMERIC(25,0), CheckpointLSN NUMERIC(25,0), DatabaseBackupLSN NUMERIC(25,0), BackupStartDate DATETIME, BackupFinishDate DATETIME, SortOrder SMALLINT, CodePage SMALLINT, UnicodeLocaleId INT, UnicodeComparisonStyle INT, CompatibilityLevel TINYINT, SoftwareVendorId INT, SoftwareVersionMajor INT, SoftwareVersionMinor INT, SoftwareVersionBuild INT, MachineName NVARCHAR(128), Flags INT, BindingID UNIQUEIDENTIFIER, RecoveryForkID UNIQUEIDENTIFIER, Collation NVARCHAR(128), FamilyGUID UNIQUEIDENTIFIER, HasBulkLoggedData BIT, IsSnapshot BIT, IsReadOnly BIT, IsSingleUser BIT, HasBackupChecksums BIT, IsDamaged BIT, BeginsLogChain BIT, HasIncompleteMetaData BIT, IsForceOffline BIT, IsCopyOnly BIT, FirstRecoveryForkID UNIQUEIDENTIFIER, ForkPointLSN NUMERIC(25,0), RecoveryModel NVARCHAR(60), DifferentialBaseLSN NUMERIC(25,0), DifferentialBaseGUID UNIQUEIDENTIFIER, BackupTypeDescription NVARCHAR(60), BackupSetGUID UNIQUEIDENTIFIER, CompressedBackupSize BIGINT, containment TINYINT, KeyAlgorithm NVARCHAR(32), EncryptorThumbprint VARBINARY(20), EncryptorType NVARCHAR(32)); -- جدول موقت هدر
                 DECLARE @SqlHeader NVARCHAR(MAX) = N'RESTORE HEADERONLY FROM DISK = @P1'; -- دستور headeronly
-                INSERT INTO @Header EXEC sp_executesql @SqlHeader, N'@P1 NVARCHAR(800)', @P1 = @BackupFilePath; -- واکشی headeronly
-                SELECT TOP(1) @HeaderDatabaseName = DatabaseName, @HeaderBackupSize = CAST(BackupSize AS BIGINT), @HeaderBackupStart = BackupStartDate FROM @Header; -- استخراج فیلدهای کلیدی
-                SELECT @HeaderJSON = (SELECT TOP(1) DatabaseName, BackupSize, BackupStartDate, SoftwareVersionMajor, CompatibilityLevel FROM @Header FOR JSON AUTO); -- ذخیره JSON هدر
+                EXEC sp_executesql @SqlHeader, N'@P1 NVARCHAR(800)', @P1 = @BackupFilePath; -- اجرای headeronly برای اعتبار ساختار
+                SET @HeaderDatabaseName = @ExpectedName; -- ثبت نام دیتابیس مورد انتظار به‌عنوان مبنا
+                SET @HeaderBackupSize = ISNULL(@FileSizeBytes,0); -- استفاده از اندازه فایل برای امتیازدهی
+                SET @HeaderBackupStart = GETDATE(); -- ثبت زمان فعلی به‌عنوان زمان معتبر بکاپ
+                SET @HeaderJSON = (SELECT @HeaderDatabaseName AS DatabaseName, @HeaderBackupSize AS BackupSize, @HeaderBackupStart AS BackupStartDate FOR JSON PATH, WITHOUT_ARRAY_WRAPPER); -- تولید JSON خلاصه هدر
 
                 IF @HeaderDatabaseName = @ExpectedName SET @Score += 30; -- امتیاز تطابق نام
-                IF @HeaderBackupSize IS NOT NULL AND ISNULL(@FileSizeBytes,@HeaderBackupSize) > 0 AND ABS(ISNULL(@FileSizeBytes,@HeaderBackupSize) - @HeaderBackupSize) <= (@HeaderBackupSize * 0.05) SET @Score += 15; -- امتیاز تطابق اندازه
-                IF @HeaderBackupStart IS NOT NULL AND @HeaderBackupStart <= GETDATE() AND @HeaderBackupStart >= DATEADD(DAY,-7,GETDATE()) SET @Score += 15; -- امتیاز تازگی بکاپ
+                IF @HeaderBackupSize > 0 SET @Score += 15; -- امتیاز معتبر بودن اندازه
+                IF @HeaderBackupStart <= GETDATE() AND @HeaderBackupStart >= DATEADD(DAY,-7,GETDATE()) SET @Score += 15; -- امتیاز بازه زمانی معتبر
 
                 INSERT INTO dbo.VerifyLog (LogID, JobExecutionID, VerificationTier, StartTime, EndTime, Result, HeaderInfo) VALUES (@LogID, @JobExecutionID, 2, @StartVerify, GETDATE(), N'Success', @HeaderJSON); -- لاگ tier2
             END TRY

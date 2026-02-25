@@ -22,6 +22,7 @@ DROP PROCEDURE IF EXISTS dbo.usp_LogError;
 DROP PROCEDURE IF EXISTS dbo.usp_ValidatePath;
 DROP PROCEDURE IF EXISTS dbo.usp_GenerateFileName;
 DROP PROCEDURE IF EXISTS dbo.usp_CalculateRequiredSpace;
+DROP PROCEDURE IF EXISTS dbo.usp_UpdateJobProgress;
 DROP PROCEDURE IF EXISTS dbo.usp_Enable_xpCmdshell;
 DROP PROCEDURE IF EXISTS dbo.usp_Disable_xpCmdshell;
 DROP PROCEDURE IF EXISTS dbo.usp_ExecuteWhitelistedCmd;
