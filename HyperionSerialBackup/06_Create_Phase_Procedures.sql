@@ -27,6 +27,7 @@ BEGIN
     DECLARE @IsAvailable BIT; -- کفایت فضا
     DECLARE @DiskError NVARCHAR(2000); -- خطای بررسی دیسک
     DECLARE @CurrentLogID BIGINT; -- شناسه رکورد لاگ جاری
+    DECLARE @CurrentError NVARCHAR(MAX); -- متن خطای جاری
     DECLARE @StartTime DATETIME2; -- زمان شروع عملیات
     DECLARE @EndTime DATETIME2; -- زمان پایان عملیات
     DECLARE @DurationSeconds INT; -- مدت عملیات
@@ -46,6 +47,7 @@ BEGIN
     WHILE @@FETCH_STATUS = 0 -- حلقه روی همه دیتابیس‌ها
     BEGIN
         BEGIN TRY
+            SET @CurrentLogID = NULL; -- ریست شناسه لاگ جاری برای هر دیتابیس
             SET @StartTime = GETDATE(); -- ثبت زمان شروع دیتابیس
 
             DECLARE @IsPathValid BIT; -- متغیر اعتبار مسیر
@@ -115,7 +117,12 @@ BEGIN
             FETCH NEXT FROM DbCursor INTO @DatabaseID, @DatabaseNameLocal, @BackupPath, @BackupType, @ActiveChecksum, @ActiveCompression; -- رکورد بعدی
         END TRY
         BEGIN CATCH
-            EXEC dbo.usp_LogError @JobExecutionID, @DatabaseNameLocal, 1, ERROR_MESSAGE(), ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(), N'Unhandled in phase1 loop'; -- ثبت خطا
+            SET @CurrentError = ERROR_MESSAGE(); -- دریافت متن خطای جاری
+            IF @CurrentLogID IS NOT NULL -- اگر لاگ شروع این دیتابیس ایجاد شده بود
+            BEGIN
+                UPDATE dbo.BackupLog SET EndTime = GETDATE(), Status = N'Failed', Notes = LEFT(@CurrentError,500) WHERE LogID = @CurrentLogID; -- ثبت شکست در لاگ بکاپ
+            END;
+            EXEC dbo.usp_LogError @JobExecutionID, @DatabaseNameLocal, 1, @CurrentError, ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(), N'Unhandled in phase1 loop'; -- ثبت خطا
             FETCH NEXT FROM DbCursor INTO @DatabaseID, @DatabaseNameLocal, @BackupPath, @BackupType, @ActiveChecksum, @ActiveCompression; -- ادامه حلقه
         END CATCH;
     END;
@@ -233,6 +240,8 @@ BEGIN
     SET XACT_ABORT ON; -- مدیریت خطا
 
     DECLARE @DatabaseID INT; DECLARE @DatabaseName NVARCHAR(128); DECLARE @BackupPath NVARCHAR(500); DECLARE @BackupType NVARCHAR(10); DECLARE @ActiveChecksum BIT; DECLARE @ActiveCompression BIT; DECLARE @MaxRetryAttempts INT; DECLARE @CurrentRetry INT; -- متغیرهای فاز3
+    DECLARE @CorruptLogID BIGINT; DECLARE @CorruptFilePath NVARCHAR(800); DECLARE @CorruptFileName NVARCHAR(255); DECLARE @CorruptFileSize BIGINT; -- متغیرهای فایل خراب
+    DECLARE @DeleteCmd NVARCHAR(1000); DECLARE @CmdReturn INT; -- متغیرهای فرمان حذف فایل
     DECLARE RetryCursor CURSOR LOCAL FAST_FORWARD FOR -- cursor دیتابیس‌های نیازمند retry
         SELECT DISTINCT b.DatabaseID, d.DatabaseName, d.BackupPath, d.BackupType, d.ActiveChecksum, d.ActiveCompression, d.MaxRetryAttempts, MAX(b.RetryCount) -- اطلاعات retry
         FROM dbo.BackupLog b JOIN dbo.BackupDatabases d ON b.DatabaseID = d.DatabaseID -- join جدول‌ها
@@ -246,6 +255,30 @@ BEGIN
     WHILE @@FETCH_STATUS = 0 -- حلقه retry
     BEGIN
         BEGIN TRY
+            SELECT TOP(1) @CorruptLogID = LogID, @CorruptFilePath = BackupFilePath, @CorruptFileName = BackupFileName, @CorruptFileSize = FileSizeBytes -- واکشی آخرین فایل خراب
+            FROM dbo.BackupLog WHERE JobExecutionID=@JobExecutionID AND DatabaseID=@DatabaseID AND VerifyResult = N'Failed' ORDER BY LogID DESC; -- انتخاب فایل خراب
+
+            IF @CorruptLogID IS NOT NULL AND @CorruptFilePath IS NOT NULL -- اگر فایل خراب قابل شناسایی بود
+            BEGIN
+                BEGIN TRY
+                    EXEC dbo.usp_Enable_xpCmdshell @JobExecutionID = @JobExecutionID; -- فعال‌سازی کنترل‌شده xp_cmdshell
+                    SET @DeleteCmd = CONCAT(N'del /Q , @CorruptFilePath, N'); -- ساخت دستور حذف فایل خراب
+                    EXEC dbo.usp_ExecuteWhitelistedCmd @JobExecutionID = @JobExecutionID, @CommandText = @DeleteCmd, @OUTPUT_ReturnCode = @CmdReturn OUTPUT; -- اجرای حذف فایل خراب
+                END TRY
+                BEGIN CATCH
+                    EXEC dbo.usp_LogError @JobExecutionID, @DatabaseName, 3, ERROR_MESSAGE(), ERROR_NUMBER(), 16, ERROR_STATE(), N'Corrupt file delete failed'; -- ثبت خطای حذف فایل خراب
+                END CATCH;
+                BEGIN TRY
+                    EXEC dbo.usp_Disable_xpCmdshell @JobExecutionID = @JobExecutionID; -- غیرفعال‌سازی xp_cmdshell پس از عملیات حذف
+                END TRY
+                BEGIN CATCH
+                    EXEC dbo.usp_LogError @JobExecutionID, @DatabaseName, 3, ERROR_MESSAGE(), ERROR_NUMBER(), 16, ERROR_STATE(), N'Disable xp_cmdshell failed after delete'; -- ثبت خطای غیرفعال‌سازی xp_cmdshell
+                END CATCH;
+
+                INSERT INTO dbo.DeleteBadLog (JobExecutionID, LogID, FileName, FilePath, FileSizeBytes, Reason, VerificationScore) -- ثبت لاگ حذف فایل خراب
+                SELECT @JobExecutionID, @CorruptLogID, @CorruptFileName, @CorruptFilePath, @CorruptFileSize, N'Corrupt file - retry initiated', VerificationScore FROM dbo.BackupLog WHERE LogID = @CorruptLogID; -- درج جزئیات حذف
+            END;
+
             UPDATE dbo.BackupLog SET RetryCount = RetryCount + 1 WHERE LogID = (SELECT MAX(LogID) FROM dbo.BackupLog WHERE JobExecutionID=@JobExecutionID AND DatabaseID=@DatabaseID); -- افزایش retry قبلی
             EXEC dbo.usp_Phase1_InitialBackup @JobExecutionID = @JobExecutionID, @DatabaseName = @DatabaseName, @DebugMode = 1, @IsRetryMode = 1; -- اجرای مجدد بکاپ برای دیتابیس خراب
             UPDATE dbo.BackupLog SET RetryCount = @CurrentRetry + 1 WHERE LogID = (SELECT MAX(LogID) FROM dbo.BackupLog WHERE JobExecutionID=@JobExecutionID AND DatabaseID=@DatabaseID); -- ست retry روی رکورد جدید
