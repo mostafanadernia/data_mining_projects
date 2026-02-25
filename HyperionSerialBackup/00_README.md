@@ -46,3 +46,10 @@ Run files in numeric order.
 - `xp_cmdshell` به صورت پیش‌فرض غیرفعال باشد.
 - تمام دستورات سیستمی در جدول `xpCmdshellAudit` ثبت شوند.
 - رمزهای عبور شبکه فقط به‌صورت رمزگذاری‌شده نگهداری شوند.
+
+
+### Project metadata
+- q.json (prompt metadata and repository hint)
+
+### یادداشت پروژه
+- فایل `q.json` به عنوان متادیتای پروژه اضافه شده است.

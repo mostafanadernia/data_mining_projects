@@ -1,33 +1,35 @@
-USE [BackupLogDB];
-GO
+USE [BackupLogDB]; -- انتخاب دیتابیس تست
+GO -- پایان batch
 
--- TS001: اجرای عادی
-EXEC dbo.usp_BackupController_Main @DebugMode = 1;
+-- ===== [TS001: اجرای عادی] ===== --
+EXEC dbo.usp_BackupController_Main @DatabaseName = NULL, @ForceRestart = 1, @DebugMode = 1; -- اجرای کامل کنترلر در حالت دیباگ
 
--- TS002: بررسی وجود retry برای دیتابیس خراب
-SELECT DatabaseName, COUNT(*) AS BackupAttempts FROM dbo.BackupLog GROUP BY DatabaseName;
+-- ===== [TS002: بازیابی دیتابیس خراب با retry] ===== --
+SELECT DatabaseName, COUNT(*) AS BackupAttempts, MAX(RetryCount) AS MaxRetryCount FROM dbo.BackupLog GROUP BY DatabaseName ORDER BY DatabaseName; -- بررسی تعداد تلاش‌ها
 
--- TS003: بررسی ثبت خطاها
-SELECT TOP 100 * FROM dbo.ErrorLog ORDER BY ErrorTime DESC;
+-- ===== [TS003: رخداد قطعی شبکه و خطاها] ===== --
+SELECT TOP(200) ErrorTime, DatabaseName, Phase, ErrorSeverity, ErrorMessage FROM dbo.ErrorLog ORDER BY ErrorTime DESC; -- مشاهده خطاهای ثبت‌شده
 
--- TS004: بررسی امتیازدهی verification
-SELECT DatabaseName, VerificationScore, VerifyResult FROM dbo.BackupLog ORDER BY LogID DESC;
+-- ===== [TS004: کمبود فضای دیسک] ===== --
+SELECT TOP(200) DatabaseName, RequiredSpaceMB, AvailableSpaceMB, Status, Notes FROM dbo.BackupLog WHERE Status IN (N'Skipped',N'Failed') ORDER BY LogID DESC; -- بررسی skip ناشی از کمبود فضا
 
--- TS005: بررسی حداکثر retry
-SELECT b.DatabaseName, MAX(l.RetryCount) AS MaxRetrySeen, b.MaxRetryAttempts FROM dbo.BackupLog l JOIN dbo.BackupDatabases b ON l.DatabaseID=b.DatabaseID GROUP BY b.DatabaseName,b.MaxRetryAttempts;
+-- ===== [TS005: عبور از سقف retry] ===== --
+SELECT d.DatabaseName, d.MaxRetryAttempts, MAX(b.RetryCount) AS SeenRetry, SUM(CASE WHEN b.VerifyResult='Failed' THEN 1 ELSE 0 END) AS FailedEntries FROM dbo.BackupDatabases d LEFT JOIN dbo.BackupLog b ON d.DatabaseID=b.DatabaseID GROUP BY d.DatabaseName, d.MaxRetryAttempts ORDER BY d.DatabaseName; -- تحلیل retry
 
--- TS006: بررسی retention
-SELECT TOP 100 * FROM dbo.DeleteOldLog ORDER BY DeleteTime DESC;
+-- ===== [TS006: سیاست نگهداری فایل] ===== --
+SELECT TOP(200) DatabaseID, FileName, DeletionReason, DeleteTime FROM dbo.DeleteOldLog ORDER BY DeleteTime DESC; -- گزارش حذف فایل‌های قدیمی
 
--- TS007: چند خطای همزمان
-SELECT Phase, ErrorSeverity, COUNT(*) AS Cnt FROM dbo.ErrorLog GROUP BY Phase, ErrorSeverity;
+-- ===== [TS007: خطاهای همزمان] ===== --
+SELECT Phase, ErrorSeverity, COUNT(*) AS Cnt FROM dbo.ErrorLog GROUP BY Phase, ErrorSeverity ORDER BY Phase, ErrorSeverity; -- توزیع خطا بر اساس فاز و شدت
 
--- TS008: پایش عملیات طولانی
-SELECT * FROM dbo.JobExecutionLog WHERE Status='Running';
+-- ===== [TS008: عملیات طولانی و resume] ===== --
+SELECT TOP(50) JobExecutionID, StartTime, EndTime, Status, CurrentPhase, IterationCount FROM dbo.JobExecutionLog ORDER BY StartTime DESC; -- مشاهده resume/phase progression
 
--- TS009: امنیت xp_cmdshell
-SELECT TOP 100 * FROM dbo.xpCmdshellAudit ORDER BY CommandTime DESC;
+-- ===== [TS009: امنیت xp_cmdshell] ===== --
+SELECT TOP(200) CommandTime, CommandText, ReturnCode, OutputPreview FROM dbo.xpCmdshellAudit ORDER BY CommandTime DESC; -- بررسی audit دستورات سیستم
 
--- TS010: مسیر مخرب
-DECLARE @ok BIT; EXEC dbo.usp_ValidatePath N'D:\Backups; DELETE FROM sys.tables --', @ok OUTPUT; SELECT @ok AS IsValid;
-GO
+-- ===== [TS010: جلوگیری از تزریق مسیر] ===== --
+DECLARE @Output_IsValid BIT; -- تعریف خروجی اعتبار
+EXEC dbo.usp_ValidatePath N'D:\Backups; DELETE FROM sys.tables --', @Output_IsValid OUTPUT; -- تست مسیر مخرب
+SELECT @Output_IsValid AS IsValid; -- انتظار 0
+GO -- پایان batch

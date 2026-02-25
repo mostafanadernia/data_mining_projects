@@ -22,8 +22,17 @@ DROP PROCEDURE IF EXISTS dbo.usp_LogError;
 DROP PROCEDURE IF EXISTS dbo.usp_ValidatePath;
 DROP PROCEDURE IF EXISTS dbo.usp_GenerateFileName;
 DROP PROCEDURE IF EXISTS dbo.usp_CalculateRequiredSpace;
+DROP PROCEDURE IF EXISTS dbo.usp_Enable_xpCmdshell;
+DROP PROCEDURE IF EXISTS dbo.usp_Disable_xpCmdshell;
+DROP PROCEDURE IF EXISTS dbo.usp_ExecuteWhitelistedCmd;
+DROP PROCEDURE IF EXISTS dbo.usp_AuditXpCmdshell;
+DROP PROCEDURE IF EXISTS dbo.usp_CheckDiskSpace;
+DROP PROCEDURE IF EXISTS dbo.usp_GetThrottleDelay;
+DROP PROCEDURE IF EXISTS dbo.usp_DecryptPassword;
 DROP FUNCTION IF EXISTS dbo.ufn_IsValidBackupPath;
 DROP FUNCTION IF EXISTS dbo.ufn_CalcRequiredSpaceMB;
+DROP FUNCTION IF EXISTS dbo.ufn_GetGrowthFactor30Days;
+DROP FUNCTION IF EXISTS dbo.ufn_GetVerifyResultByScore;
 
 DROP TABLE IF EXISTS dbo.xpCmdshellAudit, dbo.DiskSpaceHistory, dbo.RetryQueue, dbo.ErrorLog, dbo.DeleteBadLog, dbo.DeleteOldLog, dbo.VerifyLog, dbo.BackupLog, dbo.JobExecutionLog, dbo.BackupSettings, dbo.BackupDatabases;
 GO
