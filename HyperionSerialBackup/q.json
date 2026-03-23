@@ -1,0 +1,7 @@
+{
+  "project": "Hyperion Serial Backup System",
+  "version": "5.0_final_serial_english",
+  "note": "Mission-critical serial backup framework with strict phase separation",
+  "repository_hint": "https://github.com/mostafanadernia/sqlBackUp",
+  "generated_in_repo": "data_mining_projects/HyperionSerialBackup"
+}
